@@ -3,7 +3,7 @@
 __author__ = "Michael Heise"
 __copyright__ = "Copyright (C) 2021 by Michael Heise"
 __license__ = "Apache License Version 2.0"
-__version__ = "0.0.1"
+__version__ = "0.0.2"
 __date__ = "08/09/2021"
 
 """Configurable logging of program usage under Windows
@@ -24,12 +24,13 @@ __date__ = "08/09/2021"
 #    limitations under the License.
 
 # standard imports
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import configparser
 import argparse
 import pathlib
 import sys
 import time
+import json
 import signal
 
 
@@ -46,7 +47,9 @@ def writeLogMsg(message):
     if not log:
         return
 
-    log.write(logformat.format(datetime.now().isoformat(sep=" ", timespec="seconds"), message))
+    log.write(
+        logformat.format(datetime.now().isoformat(sep=" ", timespec="seconds"), message)
+    )
     log.flush()
 
 
@@ -54,7 +57,7 @@ def readConfig():
     try:
         writeLogMsg(f"Reading configuration from '{args.configfile}'")
 
-        if not pathlib.Path.exists(args.configfile):
+        if not args.configfile.exists():
             raise FileNotFoundError("File not found")
 
         config = configparser.ConfigParser(allow_no_value=True, delimiters=("="))
@@ -63,14 +66,15 @@ def readConfig():
 
         if config["Processes"]:
             processes_to_log = {
-                pn.lower(): opt.split(",") if opt else None for (pn, opt) in config["Processes"].items()
+                pn.lower(): opt.split(",") if opt else None
+                for (pn, opt) in config["Processes"].items()
             }
         else:
             raise NameError("Invalid configuration")
 
         if not processes_to_log:
             raise Exception("No processes to log")
-        
+
         # TODO validate configuration: int usage times? valid options?
 
     except Exception as e:
@@ -84,12 +88,29 @@ def readTodaysUsage():
     """Read usage file: date, if not today --> return empty dictionary
     else return dictionary with keys = process names, values = {"usetime", "expired", "laststart", "lastend", "active"}
     """
-    return {}
+    stateFilePath = pathlib.Path(stateFileName)
+    if stateFilePath.exists():
+        writeLogMsg("Reading state file with usage statistics.")
+        try:
+            stateFile = open(stateFilePath, "r")
+            stateFileDateStr, pu = json.load(stateFile)
+            if not date.fromisoformat(stateFileDateStr) == date.today():
+                writeLogMsg("State file is not from today, reset usage data.")
+                pu = {}
+        except Exception as e:
+            writeLogMsg(f"Reading process usage from state file failed! ({e.args[0]})")
+            sys.exit(-1)
+        finally:
+            if stateFile:
+                stateFile.close()
+    else:
+        writeLogMsg("No state file with process usage found.")
+        pu = {}
+    return pu
 
 
 def getActiveMatches(processes_to_log):
-    """Return all matching processes by id
-    """
+    """Return all matching processes by id"""
     return {
         p.pid: p.info
         for p in psutil.process_iter(["name", "create_time"])
@@ -98,15 +119,15 @@ def getActiveMatches(processes_to_log):
 
 
 def getMatchingActiveProcesses(processes_to_log):
-    writeLogMsg("getMatchingActiveProcesses")
-    
+    #writeLogMsg("getMatchingActiveProcesses")
+
     active_matches = getActiveMatches(processes_to_log)
 
     active = {}
     for (pid, info) in active_matches.items():
         pn = info["name"]
         ct = datetime.fromtimestamp(info["create_time"])
-        
+
         if pn not in active:
             # new process name
             active[pn] = {"cdatetime": max(ct, service_start)}
@@ -115,18 +136,18 @@ def getMatchingActiveProcesses(processes_to_log):
             if ct > service_start and ct < active[pn]["cdatetime"]:
                 # ...but started earlier
                 active[pn]["cdatetime"] = ct
-                
+
     return active
 
 
 def logProcessesStartedBefore(active_proc):
-    writeLogMsg("logProcessesStartedBefore")
+    #writeLogMsg("logProcessesStartedBefore")
     for (pn, pd) in active_proc.items():
         writeLogMsg(f"Process '{pn}' has been started before.")
 
 
 def logChanges(last_proc, active_proc):
-    writeLogMsg("logChanges")
+    #writeLogMsg("logChanges")
     for (pn, pd) in last_proc.items():
         if not pn in active_proc:
             writeLogMsg(f"Process '{pn}' has ended.")
@@ -138,7 +159,7 @@ def logChanges(last_proc, active_proc):
 
 
 def updateProcessUsage(process_usage, last_proc, active_proc):
-    writeLogMsg("updateProcessUsage")
+    #writeLogMsg("updateProcessUsage")
     if last_proc:
         for (pn, pd) in last_proc.items():
             if pn in process_usage and "active" in pd and not pd["active"]:
@@ -151,7 +172,7 @@ def updateProcessUsage(process_usage, last_proc, active_proc):
             pu = process_usage[pn]
             if pu["active"]:
                 # still running
-                pu["usetime"] += inc_time/to_minutes
+                pu["usetime"] += inc_time / to_minutes
             else:
                 # re-started
                 pu["active"] = True
@@ -159,19 +180,50 @@ def updateProcessUsage(process_usage, last_proc, active_proc):
                 pu["lastend"] = None
         else:
             # new process, running the first time today
-            process_usage[pn] = {"usetime": 0.0, "expired": False, "laststart": pd["cdatetime"], "lastend": None, "active": True}
+            process_usage[pn] = {
+                "usetime": 0.0,
+                "expired": 0,
+                "laststart": pd["cdatetime"],
+                "lastend": None,
+                "active": True,
+            }
 
 
 def evalProcessUsage(processes_to_log, process_usage):
-    writeLogMsg("evalProcessUsage")
+    #writeLogMsg("evalProcessUsage")
     for (pn, pud) in process_usage.items():
-        if processes_to_log[pn] and not pud["expired"] and pud["usetime"] > int(processes_to_log[pn][0]):
-            writeLogMsg(f"--> Today's usage limit of {processes_to_log[pn][0]} minutes expired for process '{pn}'!")
-            pud["expired"] = True
+        if (
+            pud["active"]
+            and processes_to_log[pn]
+            and pud["usetime"] > int(processes_to_log[pn][0])
+        ):
+            if pud["expired"] == 0:
+                writeLogMsg(
+                    f"--> Today's usage limit of {processes_to_log[pn][0]} minutes expired for process '{pn}'!"
+                )
+                pud["expired"] = 1
 
 
-def writeTodaysUsage():
-    pass
+def formatDateTimeForJSON(obj):
+    if isinstance(obj, (date, datetime)):
+        return obj.isoformat()
+
+
+def writeTodaysUsage(process_usage):
+    if len(process_usage) == 0:
+        return
+
+    try:
+        stateFile = open(pathlib.Path(stateFileName), "w")
+        json.dump(
+            (date.today(), process_usage), stateFile, default=formatDateTimeForJSON
+        )
+    except Exception as e:
+        writeLogMsg(f"Writing process usage to state file failed! ({e.args[0]})")
+        sys.exit(-1)
+    finally:
+        if stateFile:
+            stateFile.close()
 
 
 def sigterm_handler(_signo, _stack_frame):
@@ -181,9 +233,14 @@ def sigterm_handler(_signo, _stack_frame):
 
 try:
     log = None
-    
+    process_usage = None
+
     to_minutes = timedelta(minutes=1)
-    
+
+    sleepTime = 20
+
+    stateFileName = "./MiHsProcLog.state"
+
     # install handler
     signal.signal(signal.SIGTERM, sigterm_handler)
 
@@ -212,13 +269,13 @@ try:
     last_now = service_start
 
     process_usage = readTodaysUsage()
-                           
+
     last_proc = None
 
     while True:
         time_now = datetime.now()
         inc_time = time_now - last_now
-        
+
         active_proc = getMatchingActiveProcesses(processes_to_log)
 
         if last_proc:
@@ -227,13 +284,15 @@ try:
             logProcessesStartedBefore(active_proc)
 
         updateProcessUsage(process_usage, last_proc, active_proc)
-        
+
         evalProcessUsage(processes_to_log, process_usage)
+
+        writeTodaysUsage(process_usage)
 
         last_proc = active_proc
         last_now = time_now
 
-        time.sleep(20)
+        time.sleep(sleepTime)
 
 except Exception as e:
     writeLogMsg(f"Unhandled exception: {e}")

@@ -4,7 +4,7 @@ __author__ = "Michael Heise"
 __copyright__ = "Copyright (C) 2021 by Michael Heise"
 __license__ = "Apache License Version 2.0"
 __version__ = "0.0.2"
-__date__ = "08/09/2021"
+__date__ = "08/11/2021"
 
 """Configurable logging of program usage under Windows
 """
@@ -32,6 +32,8 @@ import sys
 import time
 import json
 import signal
+import ctypes
+import threading
 
 
 # 3rd party imports
@@ -41,6 +43,10 @@ import psutil
 
 
 logformat = "{0} - {1}\n"
+
+checkIntervalSec = None
+intervalsBetweenWarnings = None
+numWarningRepetitions = None
 
 
 def writeLogMsg(message):
@@ -64,6 +70,20 @@ def readConfig():
 
         config.read(args.configfile)
 
+        global checkIntervalSec
+        global intervalsBetweenWarnings
+        global numWarningRepetitions
+        
+        if config["Options"]:
+            checkIntervalSec = config["Options"].getint("CheckIntervalSec")
+            intervalsBetweenWarnings = config["Options"].getint("IntervalsBetweenWarnings")
+            numWarningRepetitions = config["Options"].getint("NumWarningRepetitions")
+        else:
+            writeLogMsg("No [Options] section in configuration file, using defaults.")
+            checkIntervalSec = 20
+            intervalsBetweenWarnings = 1
+            numWarningRepetitions = 3
+            
         if config["Processes"]:
             processes_to_log = {
                 pn.lower(): opt.split(",") if opt else None
@@ -78,7 +98,7 @@ def readConfig():
         # TODO validate configuration: int usage times? valid options?
 
     except Exception as e:
-        writeLogMsg(f"Reading configuration failed! ({e.args[0]})")
+        writeLogMsg(f"Reading configuration failed! ({e})")
         sys.exit(-1)
 
     return processes_to_log
@@ -92,13 +112,16 @@ def readTodaysUsage():
     if stateFilePath.exists():
         writeLogMsg("Reading state file with usage statistics.")
         try:
-            stateFile = open(stateFilePath, "r")
-            stateFileDateStr, pu = json.load(stateFile)
-            if not date.fromisoformat(stateFileDateStr) == date.today():
-                writeLogMsg("State file is not from today, reset usage data.")
-                pu = {}
+            with open(stateFilePath, "r", encoding="utf8") as stateFile:
+                stateFileDateStr, pu = json.load(stateFile)
+                if not date.fromisoformat(stateFileDateStr) == date.today():
+                    writeLogMsg("State file is not of today, reset usage data.")
+                    pu = {}
+                else:
+                    for (pn, pud) in pu.items():
+                        pud["expired"] = 0
         except Exception as e:
-            writeLogMsg(f"Reading process usage from state file failed! ({e.args[0]})")
+            writeLogMsg(f"Reading process usage from state file failed! ({e})")
             sys.exit(-1)
         finally:
             if stateFile:
@@ -119,7 +142,7 @@ def getActiveMatches(processes_to_log):
 
 
 def getMatchingActiveProcesses(processes_to_log):
-    #writeLogMsg("getMatchingActiveProcesses")
+    # writeLogMsg("getMatchingActiveProcesses")
 
     active_matches = getActiveMatches(processes_to_log)
 
@@ -141,13 +164,13 @@ def getMatchingActiveProcesses(processes_to_log):
 
 
 def logProcessesStartedBefore(active_proc):
-    #writeLogMsg("logProcessesStartedBefore")
+    # writeLogMsg("logProcessesStartedBefore")
     for (pn, pd) in active_proc.items():
         writeLogMsg(f"Process '{pn}' has been started before.")
 
 
 def logChanges(last_proc, active_proc):
-    #writeLogMsg("logChanges")
+    # writeLogMsg("logChanges")
     for (pn, pd) in last_proc.items():
         if not pn in active_proc:
             writeLogMsg(f"Process '{pn}' has ended.")
@@ -159,7 +182,7 @@ def logChanges(last_proc, active_proc):
 
 
 def updateProcessUsage(process_usage, last_proc, active_proc):
-    #writeLogMsg("updateProcessUsage")
+    # writeLogMsg("updateProcessUsage")
     if last_proc:
         for (pn, pd) in last_proc.items():
             if pn in process_usage and "active" in pd and not pd["active"]:
@@ -189,8 +212,23 @@ def updateProcessUsage(process_usage, last_proc, active_proc):
             }
 
 
+# see https://stackoverflow.com/questions/36440917/how-to-make-a-messagebox-auto-close-in-several-seconds-by-python
+
+def worker(title,close_until_seconds):
+    time.sleep(close_until_seconds)
+    wd = ctypes.windll.user32.FindWindowW(None, title)
+    ctypes.windll.user32.SendMessageW(wd, 0x0010, 0, 0)
+    return
+
+
+def AutoCloseMessageBoxW(owner, text, title, options, close_until_seconds):
+    t = threading.Thread(target=worker,args=(title,close_until_seconds))
+    t.start()
+    ctypes.windll.user32.MessageBoxW(owner, text, title, options)
+    
+    
 def evalProcessUsage(processes_to_log, process_usage):
-    #writeLogMsg("evalProcessUsage")
+    # writeLogMsg("evalProcessUsage")
     for (pn, pud) in process_usage.items():
         if (
             pud["active"]
@@ -199,7 +237,15 @@ def evalProcessUsage(processes_to_log, process_usage):
         ):
             if pud["expired"] == 0:
                 writeLogMsg(
-                    f"--> Today's usage limit of {processes_to_log[pn][0]} minutes expired for process '{pn}'!"
+                    f"--> Today's usage limit of {processes_to_log[pn][0]} minutes for process '{pn}'has expired!"
+                )
+                AutoCloseMessageBoxW(
+                    None,
+                    f"Today's usage limit of {processes_to_log[pn][0]} minutes for process '{pn}' has expired!\n" +
+                    f"Die heutige Nutzungsdauer von {processes_to_log[pn][0]} Minuten für den Prozess '{pn}' ist abgelaufen!",
+                    "Process warning",
+                    0x11030,
+                    int(checkIntervalSec/2)
                 )
                 pud["expired"] = 1
 
@@ -214,12 +260,12 @@ def writeTodaysUsage(process_usage):
         return
 
     try:
-        stateFile = open(pathlib.Path(stateFileName), "w")
+        stateFile = open(pathlib.Path(stateFileName), "w", encoding="utf8")
         json.dump(
             (date.today(), process_usage), stateFile, default=formatDateTimeForJSON
         )
     except Exception as e:
-        writeLogMsg(f"Writing process usage to state file failed! ({e.args[0]})")
+        writeLogMsg(f"Writing process usage to state file failed! ({e})")
         sys.exit(-1)
     finally:
         if stateFile:
@@ -236,8 +282,6 @@ try:
     process_usage = None
 
     to_minutes = timedelta(minutes=1)
-
-    sleepTime = 20
 
     stateFileName = "./MiHsProcLog.state"
 
@@ -292,7 +336,7 @@ try:
         last_proc = active_proc
         last_now = time_now
 
-        time.sleep(sleepTime)
+        time.sleep(checkIntervalSec)
 
 except Exception as e:
     writeLogMsg(f"Unhandled exception: {e}")

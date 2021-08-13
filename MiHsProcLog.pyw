@@ -3,10 +3,10 @@
 __author__ = "Michael Heise"
 __copyright__ = "Copyright (C) 2021 by Michael Heise"
 __license__ = "Apache License Version 2.0"
-__version__ = "0.0.2"
-__date__ = "08/11/2021"
+__version__ = "0.0.3"
+__date__ = "08/13/2021"
 
-"""Configurable logging of program usage under Windows
+"""Configurable logging and limiting of program usage under Windows
 """
 
 #    Copyright 2021 Michael Heise (mikiair)
@@ -59,6 +59,9 @@ def writeLogMsg(message):
     log.flush()
 
 
+validExpiredActions = "log|warn_once|warn_repeat|warn_kill|kill".split("|")
+
+
 def readConfig():
     try:
         writeLogMsg(f"Reading configuration from '{args.configfile}'")
@@ -80,7 +83,7 @@ def readConfig():
             numWarningRepetitions = config["Options"].getint("NumWarningRepetitions")
         else:
             writeLogMsg("No [Options] section in configuration file, using defaults.")
-            checkIntervalSec = 20
+            checkIntervalSec = 60
             intervalsBetweenWarnings = 1
             numWarningRepetitions = 3
             
@@ -89,6 +92,22 @@ def readConfig():
                 pn.lower(): opt.split(",") if opt else None
                 for (pn, opt) in config["Processes"].items()
             }
+            for (pn, opt) in processes_to_log.items():
+                if opt:
+                    try:
+                        opt[0] = int(opt[0])
+                    except:
+                        raise ValueError(f"Invalid time limit '{opt[0]}' for process '{pn}'")
+
+                    if len(opt) == 1:
+                        opt.append(0)
+                    elif len(opt) == 2:
+                        try:
+                            opt[1] = validExpiredActions.index(opt[1])
+                        except:
+                            raise ValueError(f"Invalid option '{opt[1]}' for process '{pn}'")
+                    else:
+                        raise ValueError(f"Invalid options '{opt}' for process '{pn}'")
         else:
             raise NameError("Invalid configuration")
 
@@ -217,7 +236,8 @@ def updateProcessUsage(process_usage, last_proc, active_proc):
 def worker(title,close_until_seconds):
     time.sleep(close_until_seconds)
     wd = ctypes.windll.user32.FindWindowW(None, title)
-    ctypes.windll.user32.SendMessageW(wd, 0x0010, 0, 0)
+    if wd > 0:
+        ctypes.windll.user32.SendMessageW(wd, 0x0010, 0, 0)
     return
 
 
@@ -227,28 +247,70 @@ def AutoCloseMessageBoxW(owner, text, title, options, close_until_seconds):
     ctypes.windll.user32.MessageBoxW(owner, text, title, options)
     
     
+def killAllProcesses(process_name):
+    writeLogMsg(f"--> Killing processes '{process_name}'...")
+    
+    for p in psutil.process_iter():
+        try:
+            if p.name().lower() == process_name:
+                p.kill()
+        except e:
+            writeLogMsg("    Could not kill a process. Access denied?")
+            
+    writeLogMsg(f"... all processes named '{process_name}' killed.")
+
+    
 def evalProcessUsage(processes_to_log, process_usage):
     # writeLogMsg("evalProcessUsage")
     for (pn, pud) in process_usage.items():
-        if (
-            pud["active"]
-            and processes_to_log[pn]
-            and pud["usetime"] > int(processes_to_log[pn][0])
-        ):
-            if pud["expired"] == 0:
-                writeLogMsg(
-                    f"--> Today's usage limit of {processes_to_log[pn][0]} minutes for process '{pn}'has expired!"
-                )
-                AutoCloseMessageBoxW(
-                    None,
-                    f"Today's usage limit of {processes_to_log[pn][0]} minutes for process '{pn}' has expired!\n" +
-                    f"Die heutige Nutzungsdauer von {processes_to_log[pn][0]} Minuten für den Prozess '{pn}' ist abgelaufen!",
-                    "Process warning",
-                    0x11030,
-                    int(checkIntervalSec/2)
-                )
-                pud["expired"] = 1
+        process_options = processes_to_log[pn]
 
+        if process_options:
+            process_time_limit = process_options[0]
+            process_expired_mode = process_options[1]
+        
+            if pud["active"] and pud["usetime"] > process_time_limit:
+                if pud["expired"] == 0:
+                    writeLogMsg(
+                        f"--> Today's usage limit of {processes_to_log[pn][0]} minutes for process '{pn}' has expired!"
+                    )
+                    
+                if process_expired_mode > 0:
+                    if (
+                        (process_expired_mode == 1 and pud["expired"] == 0) or
+                        (process_expired_mode == 2 and (numWarningRepetitions == 0 or pud["expired"] < numWarningRepetitions)) or
+                        (process_expired_mode == 3 and pud["expired"] < numWarningRepetitions) 
+                        ):
+                        pem3 = process_expired_mode == 3
+                        if pem3:
+                            closeInMinutes = (numWarningRepetitions - pud["expired"]) * intervalsBetweenWarnings * checkIntervalSec / 60
+                        AutoCloseMessageBoxW(
+                            None,
+                            f"Today's usage limit of {process_time_limit} minutes for process '{pn}' has expired!" +
+                            " Please save your work...\n" +
+                            (f"[Application will be closed in {closeInMinutes:3.1f} minutes!]\n" if pem3 else "") +
+                            f"\nDie heutige Nutzungsdauer von {process_time_limit} Minuten für den Prozess '{pn}' ist abgelaufen!" +
+                            " Bitte Dateien sichern..." +
+                            (f"\n[Anwendung wird in {closeInMinutes:3.1f} Minuten geschlossen!]" if pem3 else ""),
+                            f"{pn} - Usage warning / Nutzungswarnung ({pud['expired']})",
+                            0x11030,
+                            int((0.5 if process_expired_mode > 1 else 1) * intervalsBetweenWarnings * checkIntervalSec)
+                        )
+                    if ((process_expired_mode == 3 and pud["expired"] == numWarningRepetitions) or
+                        (process_expired_mode == 4 and pud["expired"] == 0)
+                        ):
+                        AutoCloseMessageBoxW(
+                            None,
+                            f"Application '{pn}' will be closed NOW!\n" +
+                            f"Die Anwendung '{pn}' wird JETZT geschlossen!]",
+                            f"{pn} - Usage warning / Nutzungswarnung ({pud['expired']})",
+                            0x11030,
+                            int(0.75 * intervalsBetweenWarnings * checkIntervalSec)
+                        )
+                        killAllProcesses(pn)
+                    pud["expired"] += 1
+                else:
+                    pud["expired"] = 1
 
 def formatDateTimeForJSON(obj):
     if isinstance(obj, (date, datetime)):

@@ -3,7 +3,7 @@
 __author__ = "Michael Heise"
 __copyright__ = "Copyright (C) 2021 by Michael Heise"
 __license__ = "Apache License Version 2.0"
-__version__ = "0.0.4"
+__version__ = "0.0.5"
 __date__ = "08/15/2021"
 
 """Configurable logging and limiting of program usage under Windows
@@ -69,7 +69,7 @@ def readConfig(config_file):
     try:
         writeLogMsg(f"Reading configuration from '{config_file}'")
 
-        if not config_file.exists():
+        if not config_file.exists()
             config_file = pathlib.Path(pathlib.Path.cwd(), procLogFileNameWoExt).with_suffix(".cfg")
             writeLogMsg(f"...not found, try reading configuration from '{config_file}'")
             
@@ -379,7 +379,7 @@ try:
 
     to_minutes = timedelta(minutes=1)
 
-    procLogFileNameWoExt = "MiHsProcLog"
+    procLogFileNameWoExt = "MiHsPyProLog"
     mihs_localappdata = os.path.expandvars(r"%LOCALAPPDATA%/MiHs")
     stateFilePath = pathlib.Path(mihs_localappdata,
                                  procLogFileNameWoExt,
@@ -390,7 +390,7 @@ try:
 
     # start logging (file in program data)
     log = open(pathlib.Path(".", procLogFileNameWoExt).with_suffix(".log"), "a")
-    writeLogMsg("MiHsProcLog started.")
+    writeLogMsg("MiHsPyProLog started.")
 
     # define commandline arguments
     parser = argparse.ArgumentParser(
@@ -445,6 +445,6 @@ try:
 except Exception as e:
     writeLogMsg(f"Unhandled exception: {e}")
 finally:
-    writeLogMsg("Stopping MiHsProcLog...")
+    writeLogMsg("Stopping MiHsPyProLog...")
     if log:
         log.close()

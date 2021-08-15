@@ -3,8 +3,8 @@
 __author__ = "Michael Heise"
 __copyright__ = "Copyright (C) 2021 by Michael Heise"
 __license__ = "Apache License Version 2.0"
-__version__ = "0.0.3"
-__date__ = "08/13/2021"
+__version__ = "0.0.4"
+__date__ = "08/15/2021"
 
 """Configurable logging and limiting of program usage under Windows
 """
@@ -24,16 +24,16 @@ __date__ = "08/13/2021"
 #    limitations under the License.
 
 # standard imports
-from datetime import datetime, timedelta, date
 import configparser
 import argparse
 import pathlib
 import sys
+from datetime import datetime, timedelta, date
 import time
 import json
-import signal
 import ctypes
 import threading
+import signal
 
 
 # 3rd party imports
@@ -146,7 +146,7 @@ def readTodaysUsage():
             if stateFile:
                 stateFile.close()
     else:
-        writeLogMsg("No state file with process usage found.")
+        writeLogMsg("No state file with process usage found. Init with 'unused' applications.")
         pu = {}
     return pu
 
@@ -161,6 +161,8 @@ def getActiveMatches(processes_to_log):
 
 
 def getMatchingActiveProcesses(processes_to_log):
+    """Get matching running processes, and reduce dictonary to contain only unique process names as keys
+    """
     # writeLogMsg("getMatchingActiveProcesses")
 
     active_matches = getActiveMatches(processes_to_log)
@@ -189,34 +191,43 @@ def logProcessesStartedBefore(active_proc):
 
 
 def logChanges(last_proc, active_proc):
+    """Log changed process states by comparing last_proc and active_proc
+    """
     # writeLogMsg("logChanges")
     for (pn, pd) in last_proc.items():
         if not pn in active_proc:
-            writeLogMsg(f"Process '{pn}' has ended.")
+            writeLogMsg(f"Process '{pn}' has been ended by user.")
             pd["active"] = False
 
     for (pn, pd) in active_proc.items():
         if not pn in last_proc:
-            writeLogMsg(f"Process '{pn}' started.")
+            writeLogMsg(f"Process '{pn}' has been started.")
 
 
 def updateProcessUsage(process_usage, last_proc, active_proc):
+    """Update the process usage times, find inactive processes, and re-started ones
+    """
     # writeLogMsg("updateProcessUsage")
     if last_proc:
         for (pn, pd) in last_proc.items():
             if pn in process_usage and "active" in pd and not pd["active"]:
-                process_usage[pn]["active"] = False
-                process_usage[pn]["lastend"] = time_now
+                pu = process_usage[pn]
+                pu["active"] = False
+                pu["lastend"] = time_now
 
     for (pn, pd) in active_proc.items():
         if pn in process_usage:
-            # process was running today, and has started again or is still running
+            # process was running today, and was re-started or is still running
             pu = process_usage[pn]
             if pu["active"]:
-                # still running
+                # still running (or re-started within check interval)
                 pu["usetime"] += inc_time / to_minutes
+                
+                if pu["expired"] > numWarningRepetitions:
+                    pu["expired"] = 0
             else:
-                # re-started
+                # re-started: clear 'expired' counter to show warnings
+                pu["expired"] = 0
                 pu["active"] = True
                 pu["laststart"] = pd["cdatetime"]
                 pu["lastend"] = None
@@ -225,15 +236,17 @@ def updateProcessUsage(process_usage, last_proc, active_proc):
             process_usage[pn] = {
                 "usetime": 0.0,
                 "expired": 0,
+                "active": True,
                 "laststart": pd["cdatetime"],
                 "lastend": None,
-                "active": True,
             }
 
 
 # see https://stackoverflow.com/questions/36440917/how-to-make-a-messagebox-auto-close-in-several-seconds-by-python
 
-def worker(title,close_until_seconds):
+def closeMsgBoxWorker(title,close_until_seconds):
+    """Thread to find and close message box window with the given title
+    """
     time.sleep(close_until_seconds)
     wd = ctypes.windll.user32.FindWindowW(None, title)
     if wd > 0:
@@ -242,12 +255,16 @@ def worker(title,close_until_seconds):
 
 
 def AutoCloseMessageBoxW(owner, text, title, options, close_until_seconds):
-    t = threading.Thread(target=worker,args=(title,close_until_seconds))
+    """Display a message box which will be closed automatically after a given time
+    """
+    t = threading.Thread(target=closeMsgBoxWorker,args=(title,close_until_seconds))
     t.start()
     ctypes.windll.user32.MessageBoxW(owner, text, title, options)
     
     
-def killAllProcesses(process_name):
+def killAllProcessesByName(process_name):
+    """Kill all processes with a matching name
+    """
     writeLogMsg(f"--> Killing processes '{process_name}'...")
     
     for p in psutil.process_iter():
@@ -256,20 +273,26 @@ def killAllProcesses(process_name):
                 p.kill()
         except e:
             writeLogMsg("    Could not kill a process. Access denied?")
-            
-    writeLogMsg(f"... all processes named '{process_name}' killed.")
+
+    # remove from active process dictionary to catch and log re-started application
+    del active_proc[process_name]
+    
+    writeLogMsg(f"All processes named '{process_name}' have been killed.")
 
     
 def evalProcessUsage(processes_to_log, process_usage):
+    """Evaluate process usage times, display warning messages or kill expired processes
+    """
     # writeLogMsg("evalProcessUsage")
     for (pn, pud) in process_usage.items():
         process_options = processes_to_log[pn]
 
-        if process_options:
+        if pud["active"] and process_options:
+            # if process_options is not None, a process under surveillance / with time limit is handled
             process_time_limit = process_options[0]
             process_expired_mode = process_options[1]
         
-            if pud["active"] and pud["usetime"] > process_time_limit:
+            if pud["usetime"] > process_time_limit:
                 if pud["expired"] == 0:
                     writeLogMsg(
                         f"--> Today's usage limit of {processes_to_log[pn][0]} minutes for process '{pn}' has expired!"
@@ -304,13 +327,14 @@ def evalProcessUsage(processes_to_log, process_usage):
                             f"Application '{pn}' will be closed NOW!\n" +
                             f"Die Anwendung '{pn}' wird JETZT geschlossen!]",
                             f"{pn} - Usage warning / Nutzungswarnung ({pud['expired']})",
-                            0x11030,
+                            0x11010,
                             int(0.75 * intervalsBetweenWarnings * checkIntervalSec)
                         )
-                        killAllProcesses(pn)
+                        killAllProcessesByName(pn)
                     pud["expired"] += 1
                 else:
                     pud["expired"] = 1
+
 
 def formatDateTimeForJSON(obj):
     if isinstance(obj, (date, datetime)):
@@ -318,6 +342,8 @@ def formatDateTimeForJSON(obj):
 
 
 def writeTodaysUsage(process_usage):
+    """Write current date and process usage dictionary to JSON file
+    """
     if len(process_usage) == 0:
         return
 

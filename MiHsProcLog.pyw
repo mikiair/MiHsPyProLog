@@ -27,6 +27,7 @@ __date__ = "08/15/2021"
 import configparser
 import argparse
 import pathlib
+import os
 import sys
 from datetime import datetime, timedelta, date
 import time
@@ -62,16 +63,22 @@ def writeLogMsg(message):
 validExpiredActions = "log|warn_once|warn_repeat|warn_kill|kill".split("|")
 
 
-def readConfig():
+def readConfig(config_file):
+    """Read the configuration file, get and validate settings
+    """
     try:
-        writeLogMsg(f"Reading configuration from '{args.configfile}'")
+        writeLogMsg(f"Reading configuration from '{config_file}'")
 
-        if not args.configfile.exists():
+        if not config_file.exists():
+            config_file = pathlib.Path(pathlib.Path.cwd(), procLogFileNameWoExt).with_suffix(".cfg")
+            writeLogMsg(f"...not found, try reading configuration from '{config_file}'")
+            
+        if not config_file.exists():
             raise FileNotFoundError("File not found")
 
         config = configparser.ConfigParser(allow_no_value=True, delimiters=("="))
 
-        config.read(args.configfile)
+        config.read(config_file)
 
         global checkIntervalSec
         global intervalsBetweenWarnings
@@ -127,7 +134,6 @@ def readTodaysUsage():
     """Read usage file: date, if not today --> return empty dictionary
     else return dictionary with keys = process names, values = {"usetime", "expired", "laststart", "lastend", "active"}
     """
-    stateFilePath = pathlib.Path(stateFileName)
     if stateFilePath.exists():
         writeLogMsg("Reading state file with usage statistics.")
         try:
@@ -142,9 +148,6 @@ def readTodaysUsage():
         except Exception as e:
             writeLogMsg(f"Reading process usage from state file failed! ({e})")
             sys.exit(-1)
-        finally:
-            if stateFile:
-                stateFile.close()
     else:
         writeLogMsg("No state file with process usage found. Init with 'unused' applications.")
         pu = {}
@@ -185,6 +188,8 @@ def getMatchingActiveProcesses(processes_to_log):
 
 
 def logProcessesStartedBefore(active_proc):
+    """Log all previously started processes
+    """
     # writeLogMsg("logProcessesStartedBefore")
     for (pn, pd) in active_proc.items():
         writeLogMsg(f"Process '{pn}' has been started before.")
@@ -348,20 +353,20 @@ def writeTodaysUsage(process_usage):
         return
 
     try:
-        stateFile = open(pathlib.Path(stateFileName), "w", encoding="utf8")
-        json.dump(
-            (date.today(), process_usage), stateFile, default=formatDateTimeForJSON
-        )
+        if not stateFilePath.parent.exists():
+            stateFilePath.parent.mkdir(parents=True)
+            
+        with open(stateFilePath, "w", encoding="utf8") as stateFile:
+            json.dump(
+                (date.today(), process_usage), stateFile, default=formatDateTimeForJSON
+            )
     except Exception as e:
         writeLogMsg(f"Writing process usage to state file failed! ({e})")
         sys.exit(-1)
-    finally:
-        if stateFile:
-            stateFile.close()
 
 
 def sigterm_handler(_signo, _stack_frame):
-    """clean exit on SIGTERM signal (when systemd stops the process)"""
+    """clean exit on SIGTERM signal (when system stops the process)"""
     sys.exit(0)
 
 
@@ -371,22 +376,30 @@ try:
 
     to_minutes = timedelta(minutes=1)
 
-    stateFileName = "./MiHsProcLog.state"
+    procLogFileNameWoExt = "MiHsProcLog"
+    mihs_localappdata = os.path.expandvars(r"%LOCALAPPDATA%/MiHs")
+    stateFilePath = pathlib.Path(mihs_localappdata,
+                                 procLogFileNameWoExt,
+                                 procLogFileNameWoExt).with_suffix(".state")
 
-    # install handler
+    # install signal handler
     signal.signal(signal.SIGTERM, sigterm_handler)
 
-    # start logging
-    log = open(pathlib.Path("./MiHsProcLog.log"), "a")
+    # start logging (file in program data)
+    log = open(pathlib.Path(".", procLogFileNameWoExt).with_suffix(".log"), "a")
     writeLogMsg("MiHsProcLog started.")
 
     # define commandline arguments
     parser = argparse.ArgumentParser(
         description="Configurable logging of program usage under Windows"
     )
+    # read config from local user data
+    defaultConfigPath = pathlib.Path(mihs_localappdata,
+                                     procLogFileNameWoExt,
+                                     procLogFileNameWoExt).with_suffix(".cfg")
     parser.add_argument(
         "configfile",
-        default="./MiHsProcLog.cfg",
+        default=defaultConfigPath,
         nargs="?",
         type=pathlib.Path,
         help="specify a path to the configuration file to use",
@@ -395,7 +408,7 @@ try:
     # collect commandline arguments
     args = parser.parse_args()
 
-    processes_to_log = readConfig()
+    processes_to_log = readConfig(args.configfile)
 
     service_start = datetime.now()
     last_now = service_start

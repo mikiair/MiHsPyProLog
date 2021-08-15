@@ -3,7 +3,7 @@
 __author__ = "Michael Heise"
 __copyright__ = "Copyright (C) 2021 by Michael Heise"
 __license__ = "Apache License Version 2.0"
-__version__ = "0.0.5"
+__version__ = "1.0.0"
 __date__ = "08/15/2021"
 
 """Configurable logging and limiting of program usage under Windows
@@ -60,7 +60,7 @@ def writeLogMsg(message):
     log.flush()
 
 
-validExpiredActions = "log|warn_once|warn_repeat|warn_kill|kill".split("|")
+validExpiredActions = "log|warn|warn_kill|kill".split("|")
 
 
 def readConfig(config_file):
@@ -69,7 +69,7 @@ def readConfig(config_file):
     try:
         writeLogMsg(f"Reading configuration from '{config_file}'")
 
-        if not config_file.exists()
+        if not config_file.exists():
             config_file = pathlib.Path(pathlib.Path.cwd(), procLogFileNameWoExt).with_suffix(".cfg")
             writeLogMsg(f"...not found, try reading configuration from '{config_file}'")
             
@@ -308,27 +308,26 @@ def evalProcessUsage(processes_to_log, process_usage):
                     
                 if process_expired_mode > 0:
                     if (
-                        (process_expired_mode == 1 and pud["expired"] == 0) or
-                        (process_expired_mode == 2 and (numWarningRepetitions == 0 or pud["expired"] < numWarningRepetitions)) or
-                        (process_expired_mode == 3 and pud["expired"] < numWarningRepetitions) 
+                        (process_expired_mode == 1 and (numWarningRepetitions == 0 or pud["expired"] < numWarningRepetitions)) or
+                        (process_expired_mode == 2 and pud["expired"] < numWarningRepetitions) 
                         ):
-                        pem3 = process_expired_mode == 3
-                        if pem3:
+                        pem2 = process_expired_mode == 2
+                        if pem2:
                             closeInMinutes = (numWarningRepetitions - pud["expired"]) * intervalsBetweenWarnings * checkIntervalSec / 60
                         AutoCloseMessageBoxW(
                             None,
                             f"Today's usage limit of {process_time_limit} minutes for process '{pn}' has expired!" +
                             " Please save your work...\n" +
-                            (f"[Application will be closed in {closeInMinutes:3.1f} minutes!]\n" if pem3 else "") +
+                            (f"[Application will be closed in {closeInMinutes:3.1f} minutes!]\n" if pem2 else "") +
                             f"\nDie heutige Nutzungsdauer von {process_time_limit} Minuten für den Prozess '{pn}' ist abgelaufen!" +
                             " Bitte Dateien sichern..." +
-                            (f"\n[Anwendung wird in {closeInMinutes:3.1f} Minuten geschlossen!]" if pem3 else ""),
+                            (f"\n[Anwendung wird in {closeInMinutes:3.1f} Minuten geschlossen!]" if pem2 else ""),
                             f"{pn} - Usage warning / Nutzungswarnung ({pud['expired']})",
                             0x11030,
                             int((0.5 if process_expired_mode > 1 else 1) * intervalsBetweenWarnings * checkIntervalSec)
                         )
-                    if ((process_expired_mode == 3 and pud["expired"] == numWarningRepetitions) or
-                        (process_expired_mode == 4 and pud["expired"] == 0)
+                    if ((process_expired_mode == 2 and pud["expired"] == numWarningRepetitions) or
+                        (process_expired_mode == 3 and pud["expired"] == 0)
                         ):
                         AutoCloseMessageBoxW(
                             None,

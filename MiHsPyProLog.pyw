@@ -135,7 +135,7 @@ def readTodaysUsage():
     else return dictionary with keys = process names, values = {"usetime", "expired", "laststart", "lastend", "active"}
     """
     if stateFilePath.exists():
-        writeLogMsg("Reading state file with usage statistics.")
+        writeLogMsg(f"Reading state file '{stateFilePath}' with usage data.")
         try:
             with open(stateFilePath, "r", encoding="utf8") as stateFile:
                 stateFileDateStr, pu = json.load(stateFile)
@@ -219,6 +219,9 @@ def updateProcessUsage(process_usage, last_proc, active_proc):
                 pu = process_usage[pn]
                 pu["active"] = False
                 pu["lastend"] = time_now
+    else:
+        for (pn, pud) in process_usage.items():
+            pud["active"] = False
 
     for (pn, pd) in active_proc.items():
         if pn in process_usage:
@@ -276,7 +279,7 @@ def killAllProcessesByName(process_name):
         try:
             if p.name().lower() == process_name:
                 p.kill()
-        except e:
+        except Exception as e:
             writeLogMsg("    Could not kill a process. Access denied?")
 
     # remove from active process dictionary to catch and log re-started application
